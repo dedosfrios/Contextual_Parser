@@ -1,121 +1,65 @@
 /**
- * MÓDULO: MAIN PROCESSOR (FIXED OUTPUT FOLDER)
- * DESCRIPCIÓN:
- * Ahora el resultado se guarda dentro de PROCESSED_ADOBE
+ * ==========================================
+ * MÓDULO: MAIN PROCESSOR
+ * ==========================================
  */
 function processAdobeCSV() {
 
-  const inputFolderName = "RAW_ADOBE";
-  const outputFolderName = "PROCESSED_ADOBE";
-
-  const inputFolder = DriveApp.getFoldersByName(inputFolderName).next();
-  const outputFolder = DriveApp.getFoldersByName(outputFolderName).next();
+  const inputFolder = DriveApp.getFoldersByName("RAW_ADOBE").next();
+  const outputFolder = DriveApp.getFoldersByName("PROCESSED_ADOBE").next();
 
   const files = inputFolder.getFiles();
 
-  while (files.hasNext()) {
-
-    const file = files.next();
-    const content = file.getBlob().getDataAsString();
-
-    const parsed = parseAdobe(content);
-
-    if (!parsed || parsed.length === 0) {
-      Logger.log("Sin datos parseados en: " + file.getName());
-      continue;
-    }
-
-    const rows = convertToRows(parsed);
-
-    // --- Crear sheet ---
-    const sheet = SpreadsheetApp.create(file.getName() + "_processed");
-    const ws = sheet.getActiveSheet();
-
-    ws.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
-
-    // --- MOVER A CARPETA ---
-    const fileId = sheet.getId();
-    const fileDrive = DriveApp.getFileById(fileId);
-
-    outputFolder.addFile(fileDrive);
-    DriveApp.getRootFolder().removeFile(fileDrive);
-
-    Logger.log("✅ Sheet movido a carpeta: " + outputFolderName);
+  if (!files.hasNext()) {
+    Logger.log("No hay archivos en RAW_ADOBE");
+    return;
   }
+
+  const file = files.next();
+  const content = file.getBlob().getDataAsString();
+
+  const parsed = parseAdobe(content);
+
+  if (!parsed || parsed.length === 0) {
+    Logger.log("No hay datos parseados");
+    return;
+  }
+
+  const rows = convertToRows(parsed);
+
+  const sheet = SpreadsheetApp.create(file.getName() + "_processed");
+  const ws = sheet.getActiveSheet();
+
+  ws.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+
+  const fileDrive = DriveApp.getFileById(sheet.getId());
+  outputFolder.addFile(fileDrive);
+  DriveApp.getRootFolder().removeFile(fileDrive);
 }
 
 
 /**
- * MÓDULO: UNIVERSAL ADOBE PARSER
- * DESCRIPCIÓN:
- * - Divide el CSV en bloques (tablas)
- * - Detecta headers multinivel
- * - Detecta breakdown en filas
- * - Reconstruye el contexto de cada valor
- * - Devuelve datos en formato LONG (tabla, fila, columna, valor)
+ * ==========================================
+ * MÓDULO: PARSER
+ * ==========================================
  */
 function parseAdobe(content) {
 
   const lines = content.split("\n");
-
-  let tables = [];
-  let currentTable = [];
-  let currentName = "";
-
-  // --- Paso 1: separar tablas ---
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
-
-
-line = line.replace(/"/g, "").trim();
-
-/**
- * FIX: TABLE NAME DETECTOR
- * DESCRIPCIÓN:
- * Ignora separadores (########)
- * Solo toma líneas con texto real como nombre de tabla
- */
-line = line.replace(/"/g, "").trim();
-
-if (line.startsWith("##")) {
-
-  let name = line.replace("##", "").trim();
-
-  // ignorar basura tipo ########
-  if (name.replace(/#/g, "").trim().length > 0) {
-    currentName = name;
-  }
-}
-
-
-    if (line.includes("################################")) {
-      if (currentTable.length > 0) {
-        tables.push({
-          name: currentName,
-          rows: currentTable
-        });
-        currentTable = [];
-      }
-      continue;
-    }
-
-    if (line.trim() !== "") {
-      currentTable.push(line.split(","));
-    }
-  }
+  const tables = splitTables(lines);
 
   let output = [];
 
-  // --- Paso 2: procesar cada tabla ---
-  tables.forEach(table => {
+  for (let t = 0; t < tables.length; t++) {
 
+    const table = tables[t];
     const rows = table.rows;
-    if (!rows || rows.length === 0) return;
+
+    if (!rows || rows.length === 0) continue;
 
     let headerRows = [];
     let dataStart = 0;
 
-    // detectar dónde empiezan los datos
     for (let i = 0; i < rows.length; i++) {
       if (isDataRow(rows[i])) {
         dataStart = i;
@@ -126,49 +70,18 @@ if (line.startsWith("##")) {
 
     const columns = buildColumns(headerRows);
 
-    // --- Paso 3: procesar filas de datos ---
     for (let i = dataStart; i < rows.length; i++) {
 
-      let row = rows[i];
+      const row = rows[i];
+      const rowDims = extractRowDimensions(row);
 
-      
-/**
- * FIX: ROW DIMENSION DETECTOR
- * DESCRIPCIÓN:
- * Detecta correctamente breakdown en filas.
- * Toma todas las columnas iniciales hasta que aparecen valores numéricos.
- */
-function extractRowDimensions(row) {
-
-  let dims = [];
-
-  for (let i = 0; i < row.length; i++) {
-
-    let cell = row[i];
-
-    // cuando encontramos números → ya entramos a métricas
-    if (cell !== "" && !isNaN(cell)) {
-      break;
-    }
-
-    if (cell && cell.trim() !== "") {
-      dims.push(cell.trim());
-    }
-  }
-
-  return dims;
-}
-
-
-let rowDims = extractRowDimensions(row);
-      // recorrer valores
       for (let j = 1; j < row.length; j++) {
 
         let value = row[j];
 
-        if (value === "" || value === null || value === undefined) continue;
-        if (value === "Infinity") continue;
-        if (isNaN(value)) continue;
+        if (!value || value === "" || isNaN(value)) continue;
+
+        value = value.toString().replace("\r", "").trim();
 
         output.push({
           tabla: table.name,
@@ -178,18 +91,92 @@ let rowDims = extractRowDimensions(row);
         });
       }
     }
-  });
+  }
 
   return output;
 }
 
+
 /**
+ * ==========================================
+ * MÓDULO: SPLIT TABLES
+ * ==========================================
+ */
+function splitTables(lines) {
+
+  let tables = [];
+  let currentRows = [];
+  let currentName = "";
+
+  for (let i = 0; i < lines.length; i++) {
+
+    let line = lines[i].replace(/"/g, "").replace("\r", "").trim();
+
+    if (line.includes("################################")) {
+
+      if (currentRows.length > 0) {
+        tables.push({
+          name: currentName,
+          rows: currentRows
+        });
+        currentRows = [];
+      }
+
+    } else if (line.startsWith("##")) {
+
+      currentName = line.replace("##", "").trim();
+
+    } else {
+
+      if (line !== "") {
+        currentRows.push(line.split(","));
+      }
+    }
+  }
+
+  if (currentRows.length > 0) {
+    tables.push({
+      name: currentName,
+      rows: currentRows
+    });
+  }
+
+  return tables;
+}
+
+
+/**
+ * ==========================================
+ * MÓDULO: ROW DIMENSION DETECTOR
+ * ==========================================
+ */
+function extractRowDimensions(row) {
+
+  let dims = [];
+
+  if (!row || row.length === 0) return dims;
+
+  for (let i = 0; i < row.length; i++) {
+
+    let cell = row[i];
+
+    if (!cell) continue;
+
+    let clean = cell.toString().replace("\r", "").trim();
+
+    if (clean !== "" && !isNaN(clean)) break;
+
+    if (clean !== "") dims.push(clean);
+  }
+
+  return dims;
+}
+
+
+/**
+ * ==========================================
  * MÓDULO: DATA ROW DETECTOR
- * DESCRIPCIÓN:
- * Determina si una fila corresponde a datos reales
- * (no headers). Se basa en:
- * - Primera celda no vacía
- * - Al menos un valor numérico en la fila
+ * ==========================================
  */
 function isDataRow(row) {
 
@@ -201,60 +188,55 @@ function isDataRow(row) {
   });
 }
 
+
 /**
- * MÓDULO: MULTILEVEL HEADER BUILDER
- * DESCRIPCIÓN:
- * Reconstruye headers multinivel combinando todas las filas
- * de encabezado en una sola columna tipo:
- * "Segmento | Periodo | Métrica"
+ * ==========================================
+ * MÓDULO: HEADER BUILDER
+ * ==========================================
  */
 function buildColumns(headerRows) {
 
-  if (!headerRows || headerRows.length === 0) return [];
-
-  let maxCols = Math.max(...headerRows.map(r => r.length));
   let columns = [];
+  let maxCols = Math.max(...headerRows.map(r => r.length));
 
   for (let col = 0; col < maxCols; col++) {
 
     let levels = [];
 
-    headerRows.forEach(row => {
-      let val = row[col];
+    for (let r = 0; r < headerRows.length; r++) {
+
+      let val = headerRows[r][col];
 
       if (val && val.trim() !== "") {
         levels.push(val.trim());
       }
-    });
-
-    if (levels.length > 0) {
-      columns.push(levels.join(" | "));
     }
+
+    columns.push(levels.join(" | "));
   }
 
   return columns;
 }
 
+
 /**
- * MÓDULO: OUTPUT FORMATTER
- * DESCRIPCIÓN:
- * Convierte el resultado del parser en una matriz 2D
- * lista para ser escrita en Google Sheets
+ * ==========================================
+ * MÓDULO: OUTPUT FORMAT
+ * ==========================================
  */
 function convertToRows(data) {
 
-  const headers = ["tabla", "fila", "columna", "valor"];
+  let rows = [["tabla", "fila", "columna", "valor"]];
 
-  let rows = [headers];
+  for (let i = 0; i < data.length; i++) {
 
-  data.forEach(row => {
     rows.push([
-      row.tabla,
-      row.fila,
-      row.columna,
-      Number(row.valor)
+      data[i].tabla,
+      data[i].fila,
+      data[i].columna,
+      Number(data[i].valor)
     ]);
-  });
+  }
 
   return rows;
 }
