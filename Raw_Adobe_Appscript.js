@@ -1,19 +1,20 @@
 /**
- * MÓDULO: MAIN PROCESSOR
+ * MÓDULO: MAIN PROCESSOR (FIXED OUTPUT FOLDER)
  * DESCRIPCIÓN:
- * Orquesta todo el flujo:
- * 1. Lee archivos CSV desde carpeta RAW_ADOBE
- * 2. Ejecuta el parser universal
- * 3. Convierte la data a formato tabla
- * 4. Crea un Google Sheet con el resultado
+ * Ahora el resultado se guarda dentro de PROCESSED_ADOBE
  */
 function processAdobeCSV() {
+
   const inputFolderName = "RAW_ADOBE";
+  const outputFolderName = "PROCESSED_ADOBE";
 
   const inputFolder = DriveApp.getFoldersByName(inputFolderName).next();
-  const files = inputFolder.getFilesByType(MimeType.CSV);
+  const outputFolder = DriveApp.getFoldersByName(outputFolderName).next();
+
+  const files = inputFolder.getFiles();
 
   while (files.hasNext()) {
+
     const file = files.next();
     const content = file.getBlob().getDataAsString();
 
@@ -26,13 +27,22 @@ function processAdobeCSV() {
 
     const rows = convertToRows(parsed);
 
+    // --- Crear sheet ---
     const sheet = SpreadsheetApp.create(file.getName() + "_processed");
     const ws = sheet.getActiveSheet();
 
     ws.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+
+    // --- MOVER A CARPETA ---
+    const fileId = sheet.getId();
+    const fileDrive = DriveApp.getFileById(fileId);
+
+    outputFolder.addFile(fileDrive);
+    DriveApp.getRootFolder().removeFile(fileDrive);
+
+    Logger.log("✅ Sheet movido a carpeta: " + outputFolderName);
   }
 }
-
 
 
 /**
@@ -56,9 +66,27 @@ function parseAdobe(content) {
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
-    if (line.startsWith("## ")) {
-      currentName = line.replace("##", "").trim();
-    }
+
+line = line.replace(/"/g, "").trim();
+
+/**
+ * FIX: TABLE NAME DETECTOR
+ * DESCRIPCIÓN:
+ * Ignora separadores (########)
+ * Solo toma líneas con texto real como nombre de tabla
+ */
+line = line.replace(/"/g, "").trim();
+
+if (line.startsWith("##")) {
+
+  let name = line.replace("##", "").trim();
+
+  // ignorar basura tipo ########
+  if (name.replace(/#/g, "").trim().length > 0) {
+    currentName = name;
+  }
+}
+
 
     if (line.includes("################################")) {
       if (currentTable.length > 0) {
@@ -103,23 +131,36 @@ function parseAdobe(content) {
 
       let row = rows[i];
 
-      let rowDims = [];
-      let pivotReached = false;
+      
+/**
+ * FIX: ROW DIMENSION DETECTOR
+ * DESCRIPCIÓN:
+ * Detecta correctamente breakdown en filas.
+ * Toma todas las columnas iniciales hasta que aparecen valores numéricos.
+ */
+function extractRowDimensions(row) {
 
-      // detectar dimensiones de fila (breakdown)
-      for (let j = 0; j < row.length; j++) {
+  let dims = [];
 
-        let cell = row[j];
+  for (let i = 0; i < row.length; i++) {
 
-        if (!pivotReached && (cell === "" || isNaN(row[j + 1]))) {
-          rowDims.push(cell);
-        } else {
-          pivotReached = true;
-        }
-      }
+    let cell = row[i];
 
-      rowDims = rowDims.filter(x => x !== "");
+    // cuando encontramos números → ya entramos a métricas
+    if (cell !== "" && !isNaN(cell)) {
+      break;
+    }
 
+    if (cell && cell.trim() !== "") {
+      dims.push(cell.trim());
+    }
+  }
+
+  return dims;
+}
+
+
+let rowDims = extractRowDimensions(row);
       // recorrer valores
       for (let j = 1; j < row.length; j++) {
 
