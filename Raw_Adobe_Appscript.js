@@ -41,6 +41,15 @@ function parseAdobe(content) {
 
   let output = [];
 
+  let mode = "none";
+
+  // 🔥 PANEL CONTEXT (NO se reinicia agresivamente)
+  let panelName = "";
+  let reportSuite = "";
+  let date = "";
+  let currentSegments = [];
+
+  // 🔥 TABLE
   let currentTable = "";
   let headerRows = [];
   let dataStarted = false;
@@ -55,49 +64,93 @@ function parseAdobe(content) {
     if (line === "") continue;
 
     // ===============================
-    // DETECTAR TABLA (# Nombre)
+    // PANEL BLOCK
+    // ===============================
+    if (line.startsWith("#=")) {
+      mode = "panel";
+      continue;
+    }
+
+    // ===============================
+    // TABLE BLOCK
+    // ===============================
+    if (line.startsWith("###")) {
+      mode = "table";
+      continue;
+    }
+
+    // ===============================
+    // CONTENT (#)
     // ===============================
     if (line.startsWith("#")) {
 
       let clean = line.replace(/^#+/, "").trim();
 
-      if (clean !== "" && !clean.match(/^[-=]+$/)) {
+      if (clean === "" || clean.match(/^[-=]+$/)) continue;
+
+      // -------- PANEL --------
+      if (mode === "panel") {
+
+        if (clean === "Panel" || clean === "Freeform") {
+          panelName = clean;
+          continue;
+        }
+
+        if (clean.startsWith("Report suite:")) {
+          reportSuite = clean.replace("Report suite:", "").trim();
+          continue;
+        }
+
+        if (clean.startsWith("Date:")) {
+          date = clean.replace("Date:", "").trim();
+          continue;
+        }
+
+        if (clean.startsWith("Segments:")) {
+
+          let raw = clean.replace("Segments:", "").trim();
+
+          currentSegments = raw
+            .split(",")
+            .map(s => s.trim())
+            .filter(s => s !== "");
+
+          continue;
+        }
+      }
+
+      // -------- TABLE --------
+      if (mode === "table") {
+
         currentTable = clean;
 
-        // reset headers
         headerRows = [];
         dataStarted = false;
+
+        continue;
       }
 
       continue;
     }
 
+    // ===============================
+    // DATA
+    // ===============================
     let row = line.split(",");
-
     let isData = isDataRow(row);
 
-    // ===============================
-    // DETECTAR INICIO DE DATA
-    // ===============================
     if (!dataStarted && isData) {
       dataStarted = true;
     }
 
-    // ===============================
-    // GUARDAR HEADERS
-    // ===============================
     if (!dataStarted) {
       headerRows.push(row);
       continue;
     }
 
-    // ===============================
-    // PROCESAR DATA
-    // ===============================
     const columns = buildColumns(headerRows);
     const rowDims = extractRowDimensions(row);
 
-    // 🔥 FIX: alineación dinámica
     let valueIndex = 0;
 
     for (let j = 1; j < row.length; j++) {
@@ -111,13 +164,15 @@ function parseAdobe(content) {
       let columna = columns[valueIndex] || "";
 
       output.push({
+        panel: panelName + " | " + reportSuite + " | " + date,
+        filtro: currentSegments.join(" | "), // 👈 renombrado como querías
         tabla: currentTable,
         fila: rowDims.join(" | "),
         columna: columna,
         valor: value
       });
 
-      valueIndex++; // ✅ solo incrementa cuando hay valor real
+      valueIndex++;
     }
   }
 
@@ -262,16 +317,19 @@ function buildColumns(headerRows) {
  * OUTPUT
  * ===============================
  */
+
 function convertToRows(data) {
 
-  let rows = [["tabla", "fila", "columna", "valor"]];
+  let rows = [["panel", "filtro", "tabla", "fila", "columna", "valor"]];
 
   for (let i = 0; i < data.length; i++) {
 
     rows.push([
-      data[i].tabla,
-      data[i].fila,
-      data[i].columna,
+      data[i].panel || "",
+      data[i].filtro || "",
+      data[i].tabla || "",
+      data[i].fila || "",
+      data[i].columna || "",
       Number(data[i].valor)
     ]);
   }
